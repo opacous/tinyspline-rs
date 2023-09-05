@@ -1,2 +1,2 @@
 [workspace]
-members = ["ffi"]
+members = ["ffi", "tinyspline-rs"]
