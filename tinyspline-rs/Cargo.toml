@@ -1,14 +1,9 @@
 [package]
-name = "tinyspline-ffi"
+name = "tinyspline-rs"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-
-[build-dependencies]
-bindgen = "0.65.1"
-cc = { version = "1.0.82", features = ["parallel"] }
-heck = "0.4.1"
 
 [profile.dev]
 debug = 1
