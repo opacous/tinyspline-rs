@@ -1,12 +1,33 @@
+use std::f32::consts::E;
 use std::marker::PhantomData;
 use std::slice::from_raw_parts;
 use {std::ffi::c_short, tinyspline_ffi::*};
 
+#[derive(Debug)]
 pub struct Error {
     code: tsError,
     message: String,
 }
-pub type Status = tsStatus;
+
+impl Error {
+    fn from_status(status: &tsStatus) -> Self {
+        let strung : Vec<u8>= status.message.iter().map(|c| *c as u8).collect();
+        Self{
+            code: status.code,
+            message: format!("{}", std::str::from_utf8(strung.as_slice()).unwrap()),
+        }
+    }
+}
+pub struct Status(tsStatus);
+
+impl Status {
+    fn new() -> Self {
+        Self(tsStatus {
+            code: tsError::TsSuccess,
+            message: [0; 100],
+        })
+    }
+}
 
 pub type SplineResult<T> = Result<T, Error>;
 
@@ -22,6 +43,12 @@ pub struct VecN(Box<[f64]>);
 
 pub struct Point<const dim: usize>([f64;dim]);
 
+impl<const dim: usize> Point<dim> {
+    fn new() -> Self{
+        Self([0_f64;dim])
+    }
+}
+
 
 // #[derive(Debug, Copy, Clone)]
 // pub struct tsFrame {
@@ -31,14 +58,32 @@ pub struct Point<const dim: usize>([f64;dim]);
 //     pub binormal: [f64; 3usize],
 // }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug)]
 pub struct BSpline<const dim: usize> {
     val: tsBSpline,
     status: tsStatus,
     _phantom: PhantomData<Point<dim>>
 }
 
+impl<const dim: usize> Drop for BSpline<dim> {
+    fn drop(&mut self) {
+        self.bspline_free()
+    }
+}
+
+
+impl<const dim: usize> Clone for BSpline<dim> {
+    fn clone(&self) -> Self {
+        let mut cpy = BSpline::bspline_init();
+        self.bspline_copy(&mut cpy).expect("unable to copy spline");
+        cpy
+    }
+}
+
 impl<const dim: usize> BSpline<dim> {
+    fn maybe_err<A>(&self, a:A) -> SplineResult<A> {
+        todo!();
+    }
     pub fn degree(&self) -> usize {
         unsafe { bspline_degree(&self.val) }
     }
@@ -57,7 +102,7 @@ impl<const dim: usize> BSpline<dim> {
     pub fn sof_control_points(&self) -> usize {
         unsafe { bspline_sof_control_points(&self.val) }
     }
-    pub fn bspline_control_points_ptr<'a>(&'a self) -> &'a [Point<dim>] {
+    pub fn bspline_control_points_ref<'a>(&'a self) -> &'a [Point<dim>] {
         unsafe {
             let len = self.num_control_points();
             let ptr = bspline_control_points_ptr(&self.val);
@@ -77,41 +122,72 @@ impl<const dim: usize> BSpline<dim> {
     //     )
     // }
 
-    // pub fn bspline_control_point_at_ptr(
-    //     &self,
-    //     index: usize,
-    //     ctrlp: *mut *const f64,
-    // ) -> SplineResult<()>{
-    //     bspline_control_point_at_ptr(
-    //         &self.val,
-    //         index: usize,
-    //         ctrlp: *mut *const f64,
-    //         &mut self.status,
-    //     )
-    // }
-    // pub fn bspline_set_control_points(
-    //     &mut self,
-    //     ctrlp: *const f64,
-    // ) -> SplineResult<()>{
-    //     bspline_set_control_points(
-    //         &self.val,
-    //         ctrlp: *const f64,
-    //         &mut self.status,
-    //     )
-    // }
+    pub fn control_point_n(
+        &self,
+        index: usize
+    ) -> SplineResult<Point<dim>>{
+        let mut status = Status::new();
+        let mut retv  = Point::new();
+        let rv_ptr = unsafe {
+            let mut rv_ptr : *const f64 = &retv.0[0];
+            let d_ptr : *mut *const f64 = &mut rv_ptr;
+            bspline_control_point_at_ptr(
+                &self.val,
+                index,
+                d_ptr,
+                &mut status.0,
+            );
+            rv_ptr
+        };
+        match self.status.code {
+            tsError::TsSuccess => {
+                unsafe {
+                    rv_ptr.copy_to(&mut retv.0[0], 1);
+                }
+                Ok(retv)
+            }
+            _ => {
+                Err(Error::from_status(&self.status))
+            }
+        }
+    }
+    pub fn bspline_set_control_points(
+        &mut self,
+        points: &[Point<dim>],
+    ) -> SplineResult<()> {
+        if points.len() != self.num_control_points() {
+            return Err(Error{ code: tsError::TsNumPoints, message: "".to_string() })
+        }
+        unsafe {
+            let as_ptr: *const f64 = &points[0].0[0];
+            bspline_set_control_points(
+                &mut self.val,
+                as_ptr,
+                &mut self.status,
+            );
+        }
+        self.maybe_err(())
+    }
 
-    // pub fn bspline_set_control_point_at(
-    //     &mut self,
-    //     index: usize,
-    //     ctrlp: *const f64,
-    // ) -> SplineResult<()>{
-    //     bspline_set_control_point_at(
-    //         &self.val,
-    //         index: usize,
-    //         ctrlp: *const f64,
-    //         &mut self.status,
-    //     )
-    // }
+    pub fn bspline_set_control_point_at(
+        &mut self,
+        index: usize,
+        point: &Point<dim>
+    ) -> SplineResult<()>{
+        if self.num_control_points() <= index {
+            return Err(Error{ code: tsError::TsNumPoints, message: "".to_string() })
+        }
+        unsafe {
+            let as_ptr: *const f64 = &point.0[0];
+            bspline_set_control_point_at(
+                &mut self.val,
+                index,
+                as_ptr,
+                &mut self.status,
+            );
+        }
+        self.maybe_err(())
+    }
     pub fn bspline_num_knots(&self) -> usize {
         unsafe { bspline_num_knots(&self.val) }
     }
@@ -168,8 +244,17 @@ impl<const dim: usize> BSpline<dim> {
         }
     }
 
-    pub fn bspline_init() -> tsBSpline {
-        unsafe { bspline_init() }
+    pub fn bspline_init() -> BSpline<dim> {
+        unsafe { 
+            BSpline{
+                val: bspline_init(),
+                status: tsStatus {
+                    code: tsError::TsSuccess,
+                    message: [0; 100],
+                },
+                _phantom: Default::default(),
+            } 
+        }
     }
 
     pub fn bspline_new(
@@ -213,10 +298,11 @@ impl<const dim: usize> BSpline<dim> {
     //     )
     // }
 
-    pub fn bspline_copy(&mut self, dest: &mut Self) -> SplineResult<()> {
+    pub fn bspline_copy(&self, dest: &mut Self) -> SplineResult<()> {
+        let mut status = Status::new();
         unsafe {
-            let err = bspline_copy(&self.val, &mut dest.val, &mut self.status);
-            read_err(&self.status, err)
+            let err = bspline_copy(&self.val, &mut dest.val, &mut status.0);
+            read_err(&status.0, err)
         }
     }
 
